@@ -2,100 +2,147 @@ package bogdanfinn
 
 import (
 	"aurora/httpclient"
-	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"strings"
-	"testing"
+	"math/rand"
+	"time"
+	"crypto/tls"
 
-	"github.com/joho/godotenv"
+	fhttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
+	"github.com/EDDYCJY/fake-useragent"
 )
 
-var BaseURL string
-
-func init() {
-	_ = godotenv.Load(".env")
-	BaseURL = os.Getenv("BASE_URL")
-	if BaseURL == "" {
-		BaseURL = "https://chat.openai.com/backend-anon"
-	}
-}
-func TestTlsClient_Request(t *testing.T) {
-	client := NewStdClient()
-	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-	proxy := "http://127.0.0.1:7990"
-	client.SetProxy(proxy)
-
-	apiUrl := BaseURL + "/sentinel/chat-requirements"
-	payload := strings.NewReader(`{"conversation_mode_kind":"primary_assistant"}`)
-	header := make(httpclient.AuroraHeaders)
-	header.Set("Content-Type", "application/json")
-	header.Set("User-Agent", userAgent)
-	header.Set("Accept", "*/*")
-	header.Set("oai-language", "en-US")
-	header.Set("origin", "https://chat.openai.com")
-	header.Set("referer", "https://chat.openai.com/")
-	header.Set("oai-device-id", "c83b24f0-5a9e-4c43-8915-3f67d4332609")
-	response, err := client.Request(http.MethodPost, apiUrl, header, nil, payload)
-	if err != nil {
-		return
-	}
-	defer response.Body.Close()
-	fmt.Println(response.StatusCode)
-	if response.StatusCode != 200 {
-		fmt.Println("Error: ", response.StatusCode)
-	}
+type TlsClient struct {
+	Client    tls_client.HttpClient
+	ReqBefore handler
 }
 
-func TestChatGPTModel(t *testing.T) {
-	client := NewStdClient()
-	userAgent := "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-	proxy := "http://127.0.0.1:7990"
-	client.SetProxy(proxy)
-	apiUrl := "https://chat.openai.com/backend-anon/models"
+type handler func(r *fhttp.Request) error
 
-	header := make(httpclient.AuroraHeaders)
-	header.Set("Content-Type", "application/json")
-	header.Set("User-Agent", userAgent)
-	header.Set("Accept", "*/*")
-	header.Set("oai-language", "en-US")
-	header.Set("origin", "https://chat.openai.com")
-	header.Set("referer", "https://chat.openai.com/")
-	header.Set("oai-device-id", "c83b24f0-5a9e-4c43-8915-3f67d4332609")
-	response, err := client.Request(http.MethodGet, apiUrl, header, nil, nil)
+func NewStdClient() *TlsClient {
+	rand.Seed(time.Now().UnixNano())
+	
+	// 随机化超时时间
+	timeout := rand.Intn(300) + 300
+	
+	// 随机选择客户端配置文件
+	profileList := []tls_client.ClientProfile{
+		profiles.Chrome_105,
+		profiles.Chrome_106,
+		profiles.Firefox_102,
+		profiles.Safari_15_6_1,
+		profiles.Opera_90,
+		profiles.Okhttp4Android13,
+	}
+	randomProfile := profileList[rand.Intn(len(profileList))]
+	
+	// 初始化 fake-useragent
+	ua := useragent.New()
+
+	// 根据选择的配置文件生成相应的 UA
+	var randomUA string
+	switch randomProfile {
+	case profiles.Chrome_105, profiles.Chrome_106:
+		randomUA = ua.Chrome()
+	case profiles.Firefox_102:
+		randomUA = ua.Firefox()
+	case profiles.Safari_15_6_1:
+		randomUA = ua.Safari()
+	case profiles.Opera_90:
+		randomUA = ua.Opera()
+	case profiles.Okhttp4Android13:
+		randomUA = ua.Android()
+	default:
+		randomUA = ua.Random()
+	}
+
+	// 随机化 TLS 版本
+	tlsVersions := []uint16{tls.VersionTLS10, tls.VersionTLS11, tls.VersionTLS12, tls.VersionTLS13}
+	randomTLSVersion := tlsVersions[rand.Intn(len(tlsVersions))]
+
+	client, _ := tls_client.NewHttpClient(tls_client.NewNoopLogger(), []tls_client.HttpClientOption{
+		tls_client.WithCookieJar(tls_client.NewCookieJar()),
+		tls_client.WithRandomTLSExtensionOrder(),
+		tls_client.WithTimeoutSeconds(uint(timeout)),
+		tls_client.WithClientProfile(randomProfile),
+		tls_client.WithHeader("User-Agent", randomUA),
+		tls_client.WithTLSVersion(randomTLSVersion),
+	}...)
+
+	stdClient := &TlsClient{Client: client}
+	return stdClient
+}
+
+func convertResponse(resp *fhttp.Response) *http.Response {
+	response := &http.Response{
+		Status:           resp.Status,
+		StatusCode:       resp.StatusCode,
+		Proto:            resp.Proto,
+		ProtoMajor:       resp.ProtoMajor,
+		ProtoMinor:       resp.ProtoMinor,
+		Header:           http.Header(resp.Header),
+		Body:             resp.Body,
+		ContentLength:    resp.ContentLength,
+		TransferEncoding: resp.TransferEncoding,
+		Close:            resp.Close,
+		Uncompressed:     resp.Uncompressed,
+		Trailer:          http.Header(resp.Trailer),
+	}
+	return response
+}
+
+func (t *TlsClient) handleHeaders(req *fhttp.Request, headers httpclient.AuroraHeaders) {
+	if headers == nil {
+		return
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+}
+
+func (t *TlsClient) handleCookies(req *fhttp.Request, cookies []*http.Cookie) {
+	if cookies == nil {
+		return
+	}
+	for _, c := range cookies {
+		req.AddCookie(&fhttp.Cookie{
+			Name:       c.Name,
+			Value:      c.Value,
+			Path:       c.Path,
+			Domain:     c.Domain,
+			Expires:    c.Expires,
+			RawExpires: c.RawExpires,
+			MaxAge:     c.MaxAge,
+			Secure:     c.Secure,
+			HttpOnly:   c.HttpOnly,
+			SameSite:   fhttp.SameSite(c.SameSite),
+			Raw:        c.Raw,
+			Unparsed:   c.Unparsed,
+		})
+	}
+}
+
+func (t *TlsClient) Request(method httpclient.HttpMethod, url string, headers httpclient.AuroraHeaders, cookies []*http.Cookie, body io.Reader) (*http.Response, error) {
+	req, err := fhttp.NewRequest(string(method), url, body)
 	if err != nil {
-		return
+		return nil, err
 	}
-	defer response.Body.Close()
-	fmt.Println(response.StatusCode)
-	if response.StatusCode != 200 {
-		fmt.Println("Error: ", response.StatusCode)
-		body, _ := io.ReadAll(response.Body)
-		fmt.Println(string(body))
-		return
+	t.handleHeaders(req, headers)
+	t.handleCookies(req, cookies)
+	if t.ReqBefore != nil {
+		if err := t.ReqBefore(req); err != nil {
+			return nil, err
+		}
 	}
+	do, err := t.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return convertResponse(do), nil
+}
 
-	type EnginesData struct {
-		Models []struct {
-			Slug         string   `json:"slug"`
-			MaxTokens    int      `json:"max_tokens"`
-			Title        string   `json:"title"`
-			Description  string   `json:"description"`
-			Tags         []string `json:"tags"`
-			Capabilities struct {
-			} `json:"capabilities,omitempty"`
-			ProductFeatures struct {
-			} `json:"product_features,omitempty"`
-		} `json:"models"`
-		Categories []struct {
-			Category             string `json:"category"`
-			HumanCategoryName    string `json:"human_category_name"`
-			SubscriptionLevel    string `json:"subscription_level"`
-			DefaultModel         string `json:"default_model"`
-			CodeInterpreterModel string `json:"code_interpreter_model,omitempty"`
-			PluginsModel         string `json:"plugins_model"`
-		} `json:"categories"`
-	}
-
+func (t *TlsClient) SetProxy(url string) error {
+	return t.Client.SetProxy(url)
 }
