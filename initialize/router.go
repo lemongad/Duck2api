@@ -2,6 +2,7 @@ package initialize
 
 import (
 	"aurora/middlewares"
+	"os"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,6 +26,17 @@ func RegisterRouter() *gin.Engine {
 			"message": "pong",
 		})
 	})
+
+	prefixGroup := os.Getenv("PREFIX")
+	if prefixGroup != "" {
+		prefixRouter := router.Group(prefixGroup)
+		{
+			prefixRouter.OPTIONS("/v1/chat/completions", optionsHandler)
+			prefixRouter.OPTIONS("/v1/chat/models", optionsHandler)
+			prefixRouter.POST("/v1/chat/completions", middlewares.Authorization, handler.duckduckgo)
+			prefixRouter.GET("/v1/models", middlewares.Authorization, handler.engines)
+		}
+	}
 
 	router.OPTIONS("/v1/chat/completions", optionsHandler)
 	router.OPTIONS("/v1/chat/models", optionsHandler)
